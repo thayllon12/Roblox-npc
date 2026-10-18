@@ -1,9 +1,12 @@
 {
   "name": "roblox-gemini-npc",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
+  "description": "Ponte HTTP entre o NPC Dev AI (Roblox) e o Google Gemini.",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js"
   },
   "engines": {
     "node": ">=20"
