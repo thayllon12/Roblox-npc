@@ -19,33 +19,41 @@ jobs:
       GODOT_VERSION: "4.3"
 
     steps:
+      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Java
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      # 3. Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools"
           accept-android-sdk-licenses: "true"
 
+      # 4. Install SDK dependencies
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          sdkmanager --install \
+          sdkmanager --sdk_root="$ANDROID_HOME" --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0" \
-            "ndk;23.2.8568313" \
-            "cmake;3.10.2.4988404"
+            "cmdline-tools;latest" \
+            "cmake;3.10.2.4988404" \
+            "ndk;23.2.8568313"
 
+          echo "Android SDK installation complete."
+
+      # 5. Extract project
       - name: Extract Leon Rush project
         id: project
         shell: bash
@@ -73,6 +81,8 @@ jobs:
             exit 1
           fi
 
+          echo "Extracting $ARCHIVE"
+
           unzip -oq "$ARCHIVE" -d extracted
 
           FOUND=$(find extracted \
@@ -82,16 +92,17 @@ jobs:
 
           if [ -z "$FOUND" ]; then
             echo "ERROR: project.godot not found."
-            find extracted -maxdepth 5 -type f | head -200
+            find extracted -maxdepth 5 -type f
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$FOUND")"
 
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-
           echo "Project found: $PROJECT_DIR"
 
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      # 6. Download Godot
       - name: Download Godot 4.3
         shell: bash
         run: |
@@ -121,6 +132,7 @@ jobs:
 
           "$GODOT_BIN" --version
 
+      # 7. Download export templates
       - name: Download Android Export Templates
         shell: bash
         run: |
@@ -141,6 +153,11 @@ jobs:
 
           cp -a /tmp/godot_templates/templates/. "$TEMPLATE_DIR/"
 
+          test -s "$TEMPLATE_DIR/android_debug.apk"
+
+          echo "Android templates installed."
+
+      # 8. Create debug keystore
       - name: Create Android Debug Keystore
         shell: bash
         run: |
@@ -162,6 +179,57 @@ jobs:
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
 
+      # 9. Configure project and editor
+      - name: Configure Godot Android Environment
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          project = Path("project.godot")
+          content = project.read_text()
+
+          setting = "textures/vram_compression/import_etc2_astc=true"
+
+          if setting not in content:
+              if "[rendering]" in content:
+                  content = content.replace(
+                      "[rendering]",
+                      "[rendering]\n" + setting,
+                      1
+                  )
+              else:
+                  content += "\n[rendering]\n" + setting + "\n"
+
+          project.write_text(content)
+
+          print("ETC2/ASTC setting configured.")
+          PY
+
+          mkdir -p "$HOME/.config/godot"
+
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          EOF
+
+          echo "Android SDK: $ANDROID_HOME"
+          echo "Java SDK: $JAVA_HOME"
+
+          test -x "$JAVA_HOME/bin/java"
+          test -x "$ANDROID_HOME/platform-tools/adb"
+          test -d "$ANDROID_HOME/platforms/android-34"
+          test -d "$ANDROID_HOME/build-tools/34.0.0"
+          test -d "$ANDROID_HOME/ndk/23.2.8568313"
+          test -d "$ANDROID_HOME/cmake/3.10.2.4988404"
+
+      # 10. Create Android preset
       - name: Configure Android Export Preset
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -199,6 +267,7 @@ jobs:
           package/unique_name="com.leonrush.game"
           package/name="Leon Rush"
           package/signed=true
+          package/app_category=2
           package/retain_data_on_uninstall=false
           package/exclude_from_recents=false
           launcher_icons/main_192x192=""
@@ -216,33 +285,33 @@ jobs:
           permissions/vibrate=true
           EOF
 
-          echo "Android preset created."
+          echo "Android export preset created."
 
-      - name: Check Android Environment
+      # 11. Validate Android editor settings
+      - name: Verify Godot Android Configuration
+        working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Java:"
-          java -version
+          echo "Checking Godot configuration..."
 
-          echo "Android SDK:"
-          echo "$ANDROID_HOME"
+          "$GODOT_BIN" \
+            --headless \
+            --editor \
+            --path . \
+            --quit \
+            --verbose 2>&1 | tee /tmp/godot-config.log
 
-          echo "Android SDK platform:"
-          test -d "$ANDROID_HOME/platforms/android-34"
+          echo "Checking export preset..."
 
-          echo "Build tools:"
-          test -d "$ANDROID_HOME/build-tools/34.0.0"
+          test -s export_presets.cfg
 
-          echo "NDK:"
-          test -d "$ANDROID_HOME/ndk/23.2.8568313"
+          echo "Checking export templates..."
 
-          echo "Debug keystore:"
-          test -s "$HOME/.android/debug.keystore"
+          test -s "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/android_debug.apk"
 
-          echo "Environment OK."
-
+      # 12. Import project
       - name: Import Godot Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -255,6 +324,7 @@ jobs:
             --path . \
             --import
 
+      # 13. Validate scripts
       - name: Validate Godot Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -266,8 +336,9 @@ jobs:
             --editor \
             --path . \
             --quit \
-            --verbose
+            --verbose 2>&1 | tee /tmp/godot-validation.log
 
+      # 14. Export APK
       - name: Export Android APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -275,6 +346,8 @@ jobs:
           set -euo pipefail
 
           mkdir -p build
+
+          echo "Starting Android export..."
 
           "$GODOT_BIN" \
             --headless \
@@ -290,9 +363,10 @@ jobs:
             exit 1
           fi
 
-          echo "APK generated:"
+          echo "APK successfully generated:"
           ls -lh build/LeonRush.apk
 
+      # 15. Upload APK
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
@@ -301,10 +375,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # 16. Summary
       - name: Build Summary
         if: success()
         shell: bash
         run: |
           echo "## LEON RUSH ANDROID" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "APK generated successfully." >> "$GITHUB_STEP_SUMMARY"
           echo "Artifact: leon-rush-android-apk" >> "$GITHUB_STEP_SUMMARY"
