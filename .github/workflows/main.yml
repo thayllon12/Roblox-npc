@@ -11,90 +11,134 @@ permissions:
 
 jobs:
   build:
-    name: Validate and export Android APK
+    name: Build Leon Rush Android
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+
     env:
-      GODOT_VERSION: 4.3
+      GODOT_VERSION: "4.3"
 
     steps:
+      # 1. Baixar o repositório
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Instalar Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
+      # 3. Configurar Android SDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools"
+          accept-android-sdk-licenses: "true"
 
+      # 4. Instalar componentes Android necessários
       - name: Install Android SDK packages
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager \
-            'platform-tools' \
-            'platforms;android-34' \
-            'build-tools;34.0.0'
+          set -euo pipefail
 
-      - name: Locate and extract project archive
+          sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+          echo "Android SDK instalado."
+
+      # 5. Encontrar ou extrair o projeto
+      - name: Locate Godot project
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f LEON-RUSH.zip ]]; then
+
+          if [ -f "LEON-RUSH.zip" ]; then
+            mkdir -p extracted
             unzip -oq LEON-RUSH.zip -d extracted
-          elif [[ -f leon-rush.zip ]]; then
+          elif [ -f "leon-rush.zip" ]; then
+            mkdir -p extracted
             unzip -oq leon-rush.zip -d extracted
           fi
 
-          PROJECT_FILE="$(find . -type f -name project.godot -not -path './.git/*' -print -quit)"
-          if [[ -z "$PROJECT_FILE" ]]; then
-            echo 'ERROR: project.godot was not found.'
-            find . -maxdepth 4 -type f | sort | head -200
+          FOUND=$(find . \
+            -type f \
+            -name "project.godot" \
+            -not -path "./.git/*" \
+            -print -quit)
+
+          if [ -z "$FOUND" ]; then
+            echo "ERRO: project.godot não encontrado."
+            find . -maxdepth 4 -type f
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Godot project: $PROJECT_DIR"
+          DIR=$(dirname "$FOUND")
 
-      - name: Download Godot 4.3 and Android export templates
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+          echo "Projeto encontrado: $DIR"
+
+      # 6. Baixar Godot 4.3
+      - name: Download Godot 4.3
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/godot" "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+
+          mkdir -p "$HOME/godot"
 
           curl -fL --retry 3 \
             "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" \
             -o /tmp/godot.zip
 
           unzip -oq /tmp/godot.zip -d "$HOME/godot"
-          GODOT_BIN="$(find "$HOME/godot" -maxdepth 2 -type f -name 'Godot*' -print -quit)"
 
-          if [[ -z "$GODOT_BIN" ]]; then
-            echo 'Godot executable not found'
+          GODOT_BIN=$(find "$HOME/godot" \
+            -type f \
+            -name "Godot*" \
+            -print -quit)
+
+          if [ -z "$GODOT_BIN" ]; then
+            echo "ERRO: executável Godot não encontrado."
             exit 1
           fi
 
           chmod +x "$GODOT_BIN"
+
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+
+      # 7. Baixar templates Android
+      - name: Download Android Export Templates
+        shell: bash
+        run: |
+          set -euo pipefail
 
           curl -fL --retry 3 \
             "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" \
             -o /tmp/templates.tpz
 
-          mkdir -p /tmp/godot-templates
-          unzip -oq /tmp/templates.tpz -d /tmp/godot-templates
+          mkdir -p /tmp/godot_templates
 
-          cp -a /tmp/godot-templates/templates/. "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+          unzip -oq /tmp/templates.tpz \
+            -d /tmp/godot_templates
 
-      - name: Create Android debug keystore
+          TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+
+          mkdir -p "$TEMPLATE_DIR"
+
+          cp -a /tmp/godot_templates/templates/. "$TEMPLATE_DIR/"
+
+          echo "Templates Android instalados."
+
+      # 8. Criar assinatura de debug
+      - name: Create Android Debug Keystore
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p "$HOME/.android"
 
           keytool -genkeypair -v \
@@ -102,14 +146,19 @@ jobs:
             -storepass android \
             -keypass android \
             -alias androiddebugkey \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname 'CN=LeonRush,O=LeonRush,C=BR'
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=LeonRush,O=LeonRush,C=BR"
 
-      - name: Create Android export preset
+      # 9. Criar configuração Android
+      - name: Create Android Export Preset
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
-          cat > export_presets.cfg <<'EOF'
+          set -euo pipefail
+
+          cat > export_presets.cfg <<EOF
           [preset.0]
           name="Android"
           platform="Android"
@@ -162,31 +211,69 @@ jobs:
           keystore/debug_password="android"
           EOF
 
-      - name: Import project and validate scripts
+          echo "Preset Android criado."
+
+      # 10. Importar e validar projeto
+      - name: Import and Validate Godot Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
-          "$GODOT_BIN" --headless --editor --path . --import
-          "$GODOT_BIN" --headless --editor --path . --quit
 
+          "$GODOT_BIN" \
+            --headless \
+            --editor \
+            --path . \
+            --import
+
+          "$GODOT_BIN" \
+            --headless \
+            --editor \
+            --path . \
+            --quit
+
+          echo "Validação concluída."
+
+      # 11. Exportar APK
       - name: Export Android APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p build
 
-          "$GODOT_BIN" --headless --path . --export-debug 'Android' build/LeonRush.apk
+          "$GODOT_BIN" \
+            --headless \
+            --path . \
+            --export-debug \
+            "Android" \
+            "build/LeonRush.apk"
 
-          test -s build/LeonRush.apk
-          file build/LeonRush.apk
+          if [ ! -s build/LeonRush.apk ]; then
+            echo "ERRO: APK não foi gerado."
+            exit 1
+          fi
+
+          echo "APK GERADO:"
           ls -lh build/LeonRush.apk
 
-      - name: Upload APK artifact
+      # 12. Publicar APK
+      - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: leon-rush-android-apk
           path: ${{ steps.project.outputs.dir }}/build/LeonRush.apk
           if-no-files-found: error
           retention-days: 14
+
+      # 13. Resumo
+      - name: Build Summary
+        if: success()
+        shell: bash
+        run: |
+          echo "## LEON RUSH" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Android APK exportado com sucesso." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Artefato: leon-rush-android-apk" >> "$GITHUB_STEP_SUMMARY"
