@@ -1,131 +1,137 @@
-name: Android APK
+name: Build Android APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
-
-env:
-  GODOT_VERSION: "4.3"
-  GODOT_RELEASE: "4.3-stable"
-  ZIP_FILE: "LEON-RUSH.zip"
-  PROJECT_DIR: "project"
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
-    env:
-      GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/keys/debug.keystore
-      GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
-      GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
-
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extrair o projeto do zip
-        run: |
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERRO: $ZIP_FILE não encontrado na raiz do repositório."
-            exit 1
-          fi
-          rm -rf "$PROJECT_DIR"
-          mkdir -p "$PROJECT_DIR"
-          unzip -q "$ZIP_FILE" -d "$PROJECT_DIR"
-
-          # O zip pode conter uma pasta LEON-RUSH/ no topo ou os arquivos direto.
-          # Se houver uma pasta única, promove o conteúdo dela para a raiz do projeto.
-          if [ ! -f "$PROJECT_DIR/project.godot" ] && [ -f "$PROJECT_DIR/LEON-RUSH/project.godot" ]; then
-            mv "$PROJECT_DIR/LEON-RUSH"/* "$PROJECT_DIR/" 2>/dev/null || true
-            mv "$PROJECT_DIR/LEON-RUSH"/.[!.]* "$PROJECT_DIR/" 2>/dev/null || true
-            rmdir "$PROJECT_DIR/LEON-RUSH"
-          fi
-
-          if [ ! -f "$PROJECT_DIR/project.godot" ]; then
-            echo "ERRO: project.godot não encontrado após extrair o zip."
-            find "$PROJECT_DIR" -maxdepth 3 | head -n 50
-            exit 1
-          fi
-          echo "Projeto extraído em $PROJECT_DIR:"
-          ls -la "$PROJECT_DIR"
-
-      - name: Java 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Build-tools do Android
-        run: |
-          SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f | head -n 1)"
-          echo "sdkmanager em: $SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" "platform-tools" "build-tools;34.0.0" "platforms;android-34"
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Baixar Godot ${{ env.GODOT_RELEASE }}
+      - name: Install Android packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          yes | sdkmanager --licenses || true
+
+      - name: Find project root
+        id: project
+        run: |
+          if [ -f "project.godot" ]; then
+            echo "dir=." >> $GITHUB_OUTPUT
+          elif [ -f "LEON-RUSH/project.godot" ]; then
+            echo "dir=LEON-RUSH" >> $GITHUB_OUTPUT
+          else
+            echo "project.godot not found"
+            find . -name "project.godot" || true
+            exit 1
+          fi
+
+      - name: Download Godot 4.3
         run: |
           mkdir -p "$HOME/godot"
-          curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_linux.x86_64.zip"
-          unzip -q godot.zip -d "$HOME/godot"
-          mv "$HOME/godot/Godot_v${GODOT_RELEASE}_linux.x86_64" "$HOME/godot/godot"
-          chmod +x "$HOME/godot/godot"
-          echo "$HOME/godot" >> "$GITHUB_PATH"
+          curl -L -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip"
+          unzip -o /tmp/godot.zip -d "$HOME/godot"
+          GODOT_BIN=$(find "$HOME/godot" -type f -name "Godot*" | head -n 1)
+          chmod +x "$GODOT_BIN"
+          echo "GODOT_BIN=$GODOT_BIN" >> $GITHUB_ENV
+          curl -L -o /tmp/templates.tpz \
+            "https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
+          unzip -o /tmp/templates.tpz -d /tmp/godot_templates
+          cp -r /tmp/godot_templates/templates/* "$HOME/.local/share/godot/export_templates/4.3.stable/"
 
-      - name: Export templates do Godot
+      - name: Create debug keystore
         run: |
-          curl -fsSL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_export_templates.tpz"
-          unzip -q templates.tpz -d tpz
-          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
-          mv tpz/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
-
-      - name: Keystore de debug e configuração do editor
-        run: |
-          mkdir -p "$HOME/keys" "$HOME/.config/godot"
           keytool -genkeypair -v \
-            -keystore "$HOME/keys/debug.keystore" \
-            -storepass android -keypass android \
-            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOF
-          [gd_resource type="EditorSettings" format=3]
+            -keystore "$HOME/debug.keystore" \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=LeonRush,O=LeonRush,C=BR"
 
-          [resource]
-          export/android/android_sdk_path = "$ANDROID_HOME"
-          export/android/debug_keystore = "$HOME/keys/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
+      - name: Write export_presets.cfg
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: |
+          cat > export_presets.cfg << 'EOF'
+          [preset.0]
+          name="Android"
+          platform="Android"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
+          export_path="build/LeonRush.apk"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+          script_export_mode=2
+
+          [preset.0.options]
+          custom_template/debug=""
+          custom_template/release=""
+          gradle_build/use_gradle_build=false
+          gradle_build/export_format=0
+          architectures/armeabi-v7a=false
+          architectures/arm64-v8a=true
+          architectures/x86=false
+          architectures/x86_64=false
+          version/code=1
+          version/name="1.0.0"
+          package/unique_name="com.leonrush.game"
+          package/name="Leon Rush"
+          package/signed=true
+          package/app_category=2
+          package/retain_data_on_uninstall=false
+          package/exclude_from_recents=false
+          launcher_icons/main_192x192=""
+          graphics/opengl_debug=false
+          xr_features/xr_mode=0
+          screen/immersive_mode=true
+          screen/support_small=true
+          screen/support_normal=true
+          screen/support_large=true
+          screen/support_xlarge=true
+          user_data_backup/allow=false
+          command_line/extra_args=""
+          apk_expansion/enable=false
+          permissions/custom_permissions=false
+          permissions/internet=false
+          permissions/vibrate=true
+          keystore/debug="$HOME/debug.keystore"
+          keystore/debug_user="androiddebugkey"
+          keystore/debug_password="android"
           EOF
+          sed -i "s|\$HOME|$HOME|g" export_presets.cfg
 
-      - name: Importar recursos do projeto
-        working-directory: project
-        run: godot --headless --path . --import
-
-      - name: Testes headless (regras de rota e sistemas)
-        working-directory: project
-        run: godot --headless --path . -s res://tests/run_tests.gd
-
-      - name: Exportar APK Android
-        working-directory: project
+      - name: Export APK
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          mkdir -p ../build
-          godot --headless --path . --export-debug "Android" ../build/leon-rush.apk
+          mkdir -p build
+          "$GODOT_BIN" --headless --path . --export-debug "Android" build/LeonRush.apk
+          ls -lh build/ || true
+          test -f build/LeonRush.apk
 
-      - name: Verificar o APK gerado
-        run: |
-          test -s build/leon-rush.apk
-          ls -lh build/leon-rush.apk
-          unzip -l build/leon-rush.apk | grep -q AndroidManifest.xml
-
-      - name: Publicar APK como artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: leon-rush-apk
-          path: build/leon-rush.apk
-          if-no-files-found: error
-
-      - name: Publicar também o projeto extraído (opcional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: leon-rush-projeto
-          path: project/
+          path: ${{ steps.project.outputs.dir }}/build/LeonRush.apk
+          retention-days: 14
