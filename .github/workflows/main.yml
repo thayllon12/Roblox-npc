@@ -1,5 +1,5 @@
 
-name: Build Android APK
+name: Build Leon Rush Android APK
 
 on:
   push:
@@ -11,78 +11,96 @@ permissions:
 
 jobs:
   build:
-    name: Build Leon Rush Android
+    name: Build Leon Rush
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     env:
       GODOT_VERSION: "4.3"
 
     steps:
-      # 1. Baixar o repositório
+      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Instalar Java 17
+      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3. Configurar Android SDK
+      # 3. Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools"
           accept-android-sdk-licenses: "true"
 
-      # 4. Instalar componentes Android necessários
+      # 4. SDK packages
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
           sdkmanager --install \
+            "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-          echo "Android SDK instalado."
-
-      # 5. Encontrar ou extrair o projeto
-      - name: Locate Godot project
+      # 5. Extract project ZIP
+      - name: Extract Leon Rush project
         id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f "LEON-RUSH.zip" ]; then
-            mkdir -p extracted
-            unzip -oq LEON-RUSH.zip -d extracted
-          elif [ -f "leon-rush.zip" ]; then
-            mkdir -p extracted
-            unzip -oq leon-rush.zip -d extracted
-          fi
+          mkdir -p extracted
 
-          FOUND=$(find . \
-            -type f \
-            -name "project.godot" \
-            -not -path "./.git/*" \
-            -print -quit)
+          ARCHIVE=""
 
-          if [ -z "$FOUND" ]; then
-            echo "ERRO: project.godot não encontrado."
-            find . -maxdepth 4 -type f
+          for FILE in \
+            "LEON-RUSH-FIXED.zip" \
+            "LEON-RUSH.zip" \
+            "leon-rush.zip"; do
+
+            if [ -f "$FILE" ]; then
+              ARCHIVE="$FILE"
+              break
+            fi
+          done
+
+          if [ -z "$ARCHIVE" ]; then
+            echo "ERROR: Leon Rush ZIP not found."
+            ls -lah
             exit 1
           fi
 
-          DIR=$(dirname "$FOUND")
+          echo "Extracting: $ARCHIVE"
 
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          unzip -oq "$ARCHIVE" -d extracted
 
-          echo "Projeto encontrado: $DIR"
+          echo "Searching for project.godot..."
 
-      # 6. Baixar Godot 4.3
+          FOUND=$(find extracted \
+            -type f \
+            -name "project.godot" \
+            -print -quit)
+
+          if [ -z "$FOUND" ]; then
+            echo "ERROR: project.godot not found inside ZIP."
+            echo "Extracted files:"
+            find extracted -maxdepth 5 -type f | head -200
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$FOUND")
+
+          echo "Project found: $PROJECT_DIR"
+
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      # 6. Download Godot
       - name: Download Godot 4.3
         shell: bash
         run: |
@@ -102,7 +120,7 @@ jobs:
             -print -quit)
 
           if [ -z "$GODOT_BIN" ]; then
-            echo "ERRO: executável Godot não encontrado."
+            echo "ERROR: Godot executable not found."
             exit 1
           fi
 
@@ -110,8 +128,10 @@ jobs:
 
           echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
 
-      # 7. Baixar templates Android
-      - name: Download Android Export Templates
+          "$GODOT_BIN" --version
+
+      # 7. Export templates
+      - name: Download Godot Android Templates
         shell: bash
         run: |
           set -euo pipefail
@@ -131,10 +151,8 @@ jobs:
 
           cp -a /tmp/godot_templates/templates/. "$TEMPLATE_DIR/"
 
-          echo "Templates Android instalados."
-
-      # 8. Criar assinatura de debug
-      - name: Create Android Debug Keystore
+      # 8. Debug keystore
+      - name: Create Android Keystore
         shell: bash
         run: |
           set -euo pipefail
@@ -151,8 +169,8 @@ jobs:
             -validity 10000 \
             -dname "CN=LeonRush,O=LeonRush,C=BR"
 
-      # 9. Criar configuração Android
-      - name: Create Android Export Preset
+      # 9. Android preset
+      - name: Configure Android Export
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
@@ -211,10 +229,8 @@ jobs:
           keystore/debug_password="android"
           EOF
 
-          echo "Preset Android criado."
-
-      # 10. Importar e validar projeto
-      - name: Import and Validate Godot Project
+      # 10. Import project
+      - name: Import Godot Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
@@ -226,15 +242,20 @@ jobs:
             --path . \
             --import
 
+      # 11. Validate scripts
+      - name: Validate Godot Project
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
           "$GODOT_BIN" \
             --headless \
             --editor \
             --path . \
             --quit
 
-          echo "Validação concluída."
-
-      # 11. Exportar APK
+      # 12. Export APK
       - name: Export Android APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -251,14 +272,14 @@ jobs:
             "build/LeonRush.apk"
 
           if [ ! -s build/LeonRush.apk ]; then
-            echo "ERRO: APK não foi gerado."
+            echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "APK GERADO:"
+          echo "APK successfully generated:"
           ls -lh build/LeonRush.apk
 
-      # 12. Publicar APK
+      # 13. Upload APK
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
@@ -267,13 +288,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 13. Resumo
+      # 14. Summary
       - name: Build Summary
         if: success()
         shell: bash
         run: |
-          echo "## LEON RUSH" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Android APK exportado com sucesso." >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Artefato: leon-rush-android-apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "## LEON RUSH ANDROID" >> "$GITHUB_STEP_SUMMARY"
+          echo "APK generated successfully." >> "$GITHUB_STEP_SUMMARY"
+          echo "Artifact: leon-rush-android-apk" >> "$GITHUB_STEP_SUMMARY"
