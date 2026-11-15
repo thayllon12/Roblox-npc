@@ -19,45 +19,33 @@ jobs:
       GODOT_VERSION: "4.3"
 
     steps:
-      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3. Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools"
           accept-android-sdk-licenses: "true"
 
-      # 4. Install all Godot Android dependencies
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          sdkmanager --sdk_root="$ANDROID_HOME" --install \
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0" \
-            "cmdline-tools;latest" \
-            "cmake;3.10.2.4988404" \
-            "ndk;23.2.8568313"
+            "ndk;23.2.8568313" \
+            "cmake;3.10.2.4988404"
 
-          echo "ANDROID SDK:"
-          echo "$ANDROID_HOME"
-
-          echo "JAVA SDK:"
-          echo "$JAVA_HOME"
-
-      # 5. Locate and extract ZIP
       - name: Extract Leon Rush project
         id: project
         shell: bash
@@ -85,8 +73,6 @@ jobs:
             exit 1
           fi
 
-          echo "Extracting $ARCHIVE"
-
           unzip -oq "$ARCHIVE" -d extracted
 
           FOUND=$(find extracted \
@@ -102,11 +88,11 @@ jobs:
 
           PROJECT_DIR="$(dirname "$FOUND")"
 
-          echo "Project: $PROJECT_DIR"
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      # 6. Download Godot 4.3
-      - name: Download Godot
+          echo "Project found: $PROJECT_DIR"
+
+      - name: Download Godot 4.3
         shell: bash
         run: |
           set -euo pipefail
@@ -120,10 +106,12 @@ jobs:
           unzip -oq /tmp/godot.zip -d "$HOME/godot"
 
           GODOT_BIN=$(find "$HOME/godot" \
-            -type f -name "Godot*" -print -quit)
+            -type f \
+            -name "Godot*" \
+            -print -quit)
 
           if [ -z "$GODOT_BIN" ]; then
-            echo "Godot executable not found."
+            echo "ERROR: Godot executable not found."
             exit 1
           fi
 
@@ -133,7 +121,6 @@ jobs:
 
           "$GODOT_BIN" --version
 
-      # 7. Install export templates
       - name: Download Android Export Templates
         shell: bash
         run: |
@@ -154,9 +141,6 @@ jobs:
 
           cp -a /tmp/godot_templates/templates/. "$TEMPLATE_DIR/"
 
-          echo "Export templates installed."
-
-      # 8. Create debug keystore
       - name: Create Android Debug Keystore
         shell: bash
         run: |
@@ -178,28 +162,6 @@ jobs:
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
 
-      # 9. Configure Godot editor Android settings
-      - name: Configure Godot Android SDK paths
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p "$HOME/.config/godot"
-
-          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
-          [gd_resource type="EditorSettings" format=3]
-
-          [resource]
-          export/android/android_sdk_path = "$ANDROID_HOME"
-          export/android/java_sdk_path = "$JAVA_HOME"
-          export/android/debug_keystore = "$HOME/.android/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          EOF
-
-          echo "Godot Android settings configured."
-
-      # 10. Create export preset
       - name: Configure Android Export Preset
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -237,7 +199,6 @@ jobs:
           package/unique_name="com.leonrush.game"
           package/name="Leon Rush"
           package/signed=true
-          package/app_category=2
           package/retain_data_on_uninstall=false
           package/exclude_from_recents=false
           launcher_icons/main_192x192=""
@@ -251,17 +212,37 @@ jobs:
           user_data_backup/allow=false
           command_line/extra_args=""
           apk_expansion/enable=false
-          permissions/custom_permissions=false
           permissions/internet=false
           permissions/vibrate=true
-          keystore/debug=""
-          keystore/debug_user=""
-          keystore/debug_password=""
           EOF
 
           echo "Android preset created."
 
-      # 11. Import project
+      - name: Check Android Environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Java:"
+          java -version
+
+          echo "Android SDK:"
+          echo "$ANDROID_HOME"
+
+          echo "Android SDK platform:"
+          test -d "$ANDROID_HOME/platforms/android-34"
+
+          echo "Build tools:"
+          test -d "$ANDROID_HOME/build-tools/34.0.0"
+
+          echo "NDK:"
+          test -d "$ANDROID_HOME/ndk/23.2.8568313"
+
+          echo "Debug keystore:"
+          test -s "$HOME/.android/debug.keystore"
+
+          echo "Environment OK."
+
       - name: Import Godot Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -274,7 +255,6 @@ jobs:
             --path . \
             --import
 
-      # 12. Validate project
       - name: Validate Godot Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -288,7 +268,6 @@ jobs:
             --quit \
             --verbose
 
-      # 13. Export APK
       - name: Export Android APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -314,7 +293,6 @@ jobs:
           echo "APK generated:"
           ls -lh build/LeonRush.apk
 
-      # 14. Upload APK
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
@@ -323,11 +301,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 15. Build summary
       - name: Build Summary
         if: success()
         shell: bash
         run: |
           echo "## LEON RUSH ANDROID" >> "$GITHUB_STEP_SUMMARY"
-          echo "APK successfully exported." >> "$GITHUB_STEP_SUMMARY"
+          echo "APK generated successfully." >> "$GITHUB_STEP_SUMMARY"
           echo "Artifact: leon-rush-android-apk" >> "$GITHUB_STEP_SUMMARY"
