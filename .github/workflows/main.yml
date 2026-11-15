@@ -21,10 +21,14 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android packages
+      - name: Accept licenses + install packages
         run: |
+          mkdir -p "$ANDROID_SDK_ROOT/licenses"
+          echo -e "24333f8a63b6825ea9c5514fde33152b18a0b7ea\n" > "$ANDROID_SDK_ROOT/licenses/android-sdk-license"
+          echo -e "84831b9409646a918e30573bab4c9c91346d8abd\n" > "$ANDROID_SDK_ROOT/licenses/android-sdk-preview-license"
+          echo -e "d56f5187479451eabf01fb78af6dfcb131a6481e\n" > "$ANDROID_SDK_ROOT/licenses/android-sdk-license"
+          yes 2>/dev/null | sdkmanager --licenses >/dev/null || true
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          yes | sdkmanager --licenses || true
 
       - name: Find project root
         id: project
@@ -67,7 +71,7 @@ jobs:
       - name: Write export_presets.cfg
         working-directory: ${{ steps.project.outputs.dir }}
         run: |
-          cat > export_presets.cfg << 'EOF'
+          cat > export_presets.cfg << EOF
           [preset.0]
           name="Android"
           platform="Android"
@@ -115,11 +119,10 @@ jobs:
           permissions/custom_permissions=false
           permissions/internet=false
           permissions/vibrate=true
-          keystore/debug="$HOME/debug.keystore"
-          keystore/debug_user="androiddebugkey"
-          keystore/debug_password="android"
+          keystore/debug=$HOME/debug.keystore
+          keystore/debug_user=androiddebugkey
+          keystore/debug_password=android
           EOF
-          sed -i "s|\$HOME|$HOME|g" export_presets.cfg
 
       - name: Export APK
         working-directory: ${{ steps.project.outputs.dir }}
