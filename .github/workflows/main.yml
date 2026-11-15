@@ -1,0 +1,95 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.3"
+  GODOT_RELEASE: "4.3-stable"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/keys/debug.keystore
+      GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+      GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build-tools do Android
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34"
+
+      - name: Baixar Godot ${{ env.GODOT_RELEASE }}
+        run: |
+          mkdir -p "$HOME/godot"
+          curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_linux.x86_64.zip"
+          unzip -q godot.zip -d "$HOME/godot"
+          mv "$HOME/godot/Godot_v${GODOT_RELEASE}_linux.x86_64" "$HOME/godot/godot"
+          chmod +x "$HOME/godot/godot"
+          echo "$HOME/godot" >> "$GITHUB_PATH"
+
+      - name: Export templates do Godot
+        run: |
+          curl -fsSL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${GODOT_RELEASE}/Godot_v${GODOT_RELEASE}_export_templates.tpz"
+          unzip -q templates.tpz -d tpz
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          mv tpz/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+
+      - name: Keystore de debug e configuração do editor
+        run: |
+          mkdir -p "$HOME/keys" "$HOME/.config/godot"
+          keytool -genkeypair -v \
+            -keystore "$HOME/keys/debug.keystore" \
+            -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/debug_keystore = "$HOME/keys/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+      - name: Importar recursos do projeto
+        run: godot --headless --path . --import
+
+      - name: Testes headless (regras de rota e sistemas)
+        run: godot --headless --path . -s res://tests/run_tests.gd
+
+      - name: Exportar APK Android
+        run: |
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/leon-rush.apk
+
+      - name: Verificar o APK gerado
+        run: |
+          test -s build/leon-rush.apk
+          ls -lh build/leon-rush.apk
+          unzip -l build/leon-rush.apk | grep -q AndroidManifest.xml
+
+      - name: Publicar APK como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: leon-rush-apk
+          path: build/leon-rush.apk
+          if-no-files-found: error
