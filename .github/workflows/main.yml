@@ -8,6 +8,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,17 +22,37 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept licenses + install packages
+      - name: Install Android SDK (manual)
         run: |
-          mkdir -p "$ANDROID_SDK_ROOT/licenses"
-          echo -e "24333f8a63b6825ea9c5514fde33152b18a0b7ea\n" > "$ANDROID_SDK_ROOT/licenses/android-sdk-license"
-          echo -e "84831b9409646a918e30573bab4c9c91346d8abd\n" > "$ANDROID_SDK_ROOT/licenses/android-sdk-preview-license"
-          echo -e "d56f5187479451eabf01fb78af6dfcb131a6481e\n" > "$ANDROID_SDK_ROOT/licenses/android-sdk-license"
-          yes 2>/dev/null | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          curl -fsSL -o /tmp/cmdtools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+
+          # Licenças sem prompt
+          mkdir -p "$ANDROID_HOME/licenses"
+          printf '%s\n' \
+            "24333f8a63b6825ea9c5514fde33152b18a0b7ea" \
+            > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf '%s\n' \
+            "84831b9409646a918e30573bab4c9c91346d8abd" \
+            > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          printf '%s\n' \
+            "d56f5187479451eabf01fb78af6dfcb131a6481e" \
+            >> "$ANDROID_HOME/licenses/android-sdk-license"
+
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
+          yes 2>/dev/null | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
+          sdkmanager --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
 
       - name: Find project root
         id: project
@@ -46,13 +70,14 @@ jobs:
       - name: Download Godot 4.3
         run: |
           mkdir -p "$HOME/godot"
-          curl -L -o /tmp/godot.zip \
+          curl -fsSL -o /tmp/godot.zip \
             "https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip"
           unzip -o /tmp/godot.zip -d "$HOME/godot"
           GODOT_BIN=$(find "$HOME/godot" -type f -name "Godot*" | head -n 1)
           chmod +x "$GODOT_BIN"
           echo "GODOT_BIN=$GODOT_BIN" >> $GITHUB_ENV
-          curl -L -o /tmp/templates.tpz \
+
+          curl -fsSL -o /tmp/templates.tpz \
             "https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz"
           mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
           unzip -o /tmp/templates.tpz -d /tmp/godot_templates
