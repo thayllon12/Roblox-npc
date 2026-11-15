@@ -13,7 +13,7 @@ jobs:
   build:
     name: Build Leon Rush
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     env:
       GODOT_VERSION: "4.3"
@@ -37,18 +37,27 @@ jobs:
           packages: "platform-tools"
           accept-android-sdk-licenses: "true"
 
-      # 4. SDK packages
+      # 4. Install all Godot Android dependencies
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
 
-          sdkmanager --install \
+          sdkmanager --sdk_root="$ANDROID_HOME" --install \
             "platform-tools" \
             "platforms;android-34" \
-            "build-tools;34.0.0"
+            "build-tools;34.0.0" \
+            "cmdline-tools;latest" \
+            "cmake;3.10.2.4988404" \
+            "ndk;23.2.8568313"
 
-      # 5. Extract project ZIP
+          echo "ANDROID SDK:"
+          echo "$ANDROID_HOME"
+
+          echo "JAVA SDK:"
+          echo "$JAVA_HOME"
+
+      # 5. Locate and extract ZIP
       - name: Extract Leon Rush project
         id: project
         shell: bash
@@ -71,16 +80,14 @@ jobs:
           done
 
           if [ -z "$ARCHIVE" ]; then
-            echo "ERROR: Leon Rush ZIP not found."
+            echo "ERROR: Project ZIP not found."
             ls -lah
             exit 1
           fi
 
-          echo "Extracting: $ARCHIVE"
+          echo "Extracting $ARCHIVE"
 
           unzip -oq "$ARCHIVE" -d extracted
-
-          echo "Searching for project.godot..."
 
           FOUND=$(find extracted \
             -type f \
@@ -88,20 +95,18 @@ jobs:
             -print -quit)
 
           if [ -z "$FOUND" ]; then
-            echo "ERROR: project.godot not found inside ZIP."
-            echo "Extracted files:"
+            echo "ERROR: project.godot not found."
             find extracted -maxdepth 5 -type f | head -200
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$FOUND")
+          PROJECT_DIR="$(dirname "$FOUND")"
 
-          echo "Project found: $PROJECT_DIR"
-
+          echo "Project: $PROJECT_DIR"
           echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      # 6. Download Godot
-      - name: Download Godot 4.3
+      # 6. Download Godot 4.3
+      - name: Download Godot
         shell: bash
         run: |
           set -euo pipefail
@@ -115,12 +120,10 @@ jobs:
           unzip -oq /tmp/godot.zip -d "$HOME/godot"
 
           GODOT_BIN=$(find "$HOME/godot" \
-            -type f \
-            -name "Godot*" \
-            -print -quit)
+            -type f -name "Godot*" -print -quit)
 
           if [ -z "$GODOT_BIN" ]; then
-            echo "ERROR: Godot executable not found."
+            echo "Godot executable not found."
             exit 1
           fi
 
@@ -130,8 +133,8 @@ jobs:
 
           "$GODOT_BIN" --version
 
-      # 7. Export templates
-      - name: Download Godot Android Templates
+      # 7. Install export templates
+      - name: Download Android Export Templates
         shell: bash
         run: |
           set -euo pipefail
@@ -151,8 +154,10 @@ jobs:
 
           cp -a /tmp/godot_templates/templates/. "$TEMPLATE_DIR/"
 
-      # 8. Debug keystore
-      - name: Create Android Keystore
+          echo "Export templates installed."
+
+      # 8. Create debug keystore
+      - name: Create Android Debug Keystore
         shell: bash
         run: |
           set -euo pipefail
@@ -169,14 +174,39 @@ jobs:
             -validity 10000 \
             -dname "CN=LeonRush,O=LeonRush,C=BR"
 
-      # 9. Android preset
-      - name: Configure Android Export
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$HOME/.android/debug.keystore" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
+
+      # 9. Configure Godot editor Android settings
+      - name: Configure Godot Android SDK paths
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/.config/godot"
+
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "$HOME/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+          echo "Godot Android settings configured."
+
+      # 10. Create export preset
+      - name: Configure Android Export Preset
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           set -euo pipefail
 
-          cat > export_presets.cfg <<EOF
+          cat > export_presets.cfg <<'EOF'
           [preset.0]
           name="Android"
           platform="Android"
@@ -224,12 +254,14 @@ jobs:
           permissions/custom_permissions=false
           permissions/internet=false
           permissions/vibrate=true
-          keystore/debug="$HOME/.android/debug.keystore"
-          keystore/debug_user="androiddebugkey"
-          keystore/debug_password="android"
+          keystore/debug=""
+          keystore/debug_user=""
+          keystore/debug_password=""
           EOF
 
-      # 10. Import project
+          echo "Android preset created."
+
+      # 11. Import project
       - name: Import Godot Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -242,7 +274,7 @@ jobs:
             --path . \
             --import
 
-      # 11. Validate scripts
+      # 12. Validate project
       - name: Validate Godot Project
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -253,9 +285,10 @@ jobs:
             --headless \
             --editor \
             --path . \
-            --quit
+            --quit \
+            --verbose
 
-      # 12. Export APK
+      # 13. Export APK
       - name: Export Android APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -268,18 +301,20 @@ jobs:
             --headless \
             --path . \
             --export-debug \
+            --verbose \
             "Android" \
-            "build/LeonRush.apk"
+            "build/LeonRush.apk" \
+            2>&1 | tee /tmp/godot-export.log
 
           if [ ! -s build/LeonRush.apk ]; then
             echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "APK successfully generated:"
+          echo "APK generated:"
           ls -lh build/LeonRush.apk
 
-      # 13. Upload APK
+      # 14. Upload APK
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
@@ -288,11 +323,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 14. Summary
+      # 15. Build summary
       - name: Build Summary
         if: success()
         shell: bash
         run: |
           echo "## LEON RUSH ANDROID" >> "$GITHUB_STEP_SUMMARY"
-          echo "APK generated successfully." >> "$GITHUB_STEP_SUMMARY"
+          echo "APK successfully exported." >> "$GITHUB_STEP_SUMMARY"
           echo "Artifact: leon-rush-android-apk" >> "$GITHUB_STEP_SUMMARY"
