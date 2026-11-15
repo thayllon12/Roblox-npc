@@ -1,3 +1,4 @@
+
 name: Build Android APK
 
 on:
@@ -5,104 +6,110 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Validate and export Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
-      ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      GODOT_VERSION: 4.3
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Install Android SDK (manual)
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
         run: |
-          mkdir -p "$ANDROID_HOME/cmdline-tools"
-          curl -fsSL -o /tmp/cmdtools.zip \
-            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q /tmp/cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
-          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            'platform-tools' \
+            'platforms;android-34' \
+            'build-tools;34.0.0'
 
-          mkdir -p "$ANDROID_HOME/licenses"
-          printf '%s\n' "24333f8a63b6825ea9c5514fde33152b18a0b7ea" > "$ANDROID_HOME/licenses/android-sdk-license"
-          printf '%s\n' "84831b9409646a918e30573bab4c9c91346d8abd" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
-          printf '%s\n' "d56f5187479451eabf01fb78af6dfcb131a6481e" >> "$ANDROID_HOME/licenses/android-sdk-license"
-
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
-          yes 2>/dev/null | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
-          sdkmanager --sdk_root="$ANDROID_HOME" \
-            "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0"
-
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
-
-      - name: Unzip project
-        run: |
-          if [ -f "LEON-RUSH.zip" ]; then
-            echo "Extracting LEON-RUSH.zip..."
-            unzip -o LEON-RUSH.zip -d .
-          elif [ -f "leon-rush.zip" ]; then
-            unzip -o leon-rush.zip -d .
-          fi
-          echo "Files after unzip:"
-          find . -name "project.godot" | head -20
-          ls -la
-
-      - name: Find project root
+      - name: Locate and extract project archive
         id: project
+        shell: bash
         run: |
-          FOUND=$(find . -name "project.godot" | head -n 1)
-          if [ -z "$FOUND" ]; then
-            echo "project.godot not found after unzip"
-            find . -maxdepth 3 -type d
-            ls -la
+          set -euo pipefail
+          if [[ -f LEON-RUSH.zip ]]; then
+            unzip -oq LEON-RUSH.zip -d extracted
+          elif [[ -f leon-rush.zip ]]; then
+            unzip -oq leon-rush.zip -d extracted
+          fi
+
+          PROJECT_FILE="$(find . -type f -name project.godot -not -path './.git/*' -print -quit)"
+          if [[ -z "$PROJECT_FILE" ]]; then
+            echo 'ERROR: project.godot was not found.'
+            find . -maxdepth 4 -type f | sort | head -200
             exit 1
           fi
-          DIR=$(dirname "$FOUND")
-          echo "Found project at: $DIR"
-          echo "dir=$DIR" >> $GITHUB_OUTPUT
 
-      - name: Download Godot 4.3
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Godot project: $PROJECT_DIR"
+
+      - name: Download Godot 4.3 and Android export templates
+        shell: bash
         run: |
-          mkdir -p "$HOME/godot"
-          curl -fsSL -o /tmp/godot.zip \
-            "https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip"
-          unzip -o /tmp/godot.zip -d "$HOME/godot"
-          GODOT_BIN=$(find "$HOME/godot" -type f -name "Godot*" | head -n 1)
+          set -euo pipefail
+          mkdir -p "$HOME/godot" "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+
+          curl -fL --retry 3 \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" \
+            -o /tmp/godot.zip
+
+          unzip -oq /tmp/godot.zip -d "$HOME/godot"
+          GODOT_BIN="$(find "$HOME/godot" -maxdepth 2 -type f -name 'Godot*' -print -quit)"
+
+          if [[ -z "$GODOT_BIN" ]]; then
+            echo 'Godot executable not found'
+            exit 1
+          fi
+
           chmod +x "$GODOT_BIN"
-          echo "GODOT_BIN=$GODOT_BIN" >> $GITHUB_ENV
+          echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
 
-          curl -fsSL -o /tmp/templates.tpz \
-            "https://github.com/godotengine/godot-builds/releases/download/4.3-stable/Godot_v4.3-stable_export_templates.tpz"
-          mkdir -p "$HOME/.local/share/godot/export_templates/4.3.stable"
-          unzip -o /tmp/templates.tpz -d /tmp/godot_templates
-          cp -r /tmp/godot_templates/templates/* "$HOME/.local/share/godot/export_templates/4.3.stable/"
+          curl -fL --retry 3 \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" \
+            -o /tmp/templates.tpz
 
-      - name: Create debug keystore
+          mkdir -p /tmp/godot-templates
+          unzip -oq /tmp/templates.tpz -d /tmp/godot-templates
+
+          cp -a /tmp/godot-templates/templates/. "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+
+      - name: Create Android debug keystore
+        shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+
           keytool -genkeypair -v \
-            -keystore "$HOME/debug.keystore" \
+            -keystore "$HOME/.android/debug.keystore" \
             -storepass android \
             -keypass android \
             -alias androiddebugkey \
             -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=LeonRush,O=LeonRush,C=BR"
+            -dname 'CN=LeonRush,O=LeonRush,C=BR'
 
-      - name: Write export_presets.cfg
+      - name: Create Android export preset
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
-          cat > export_presets.cfg << EOF
+          cat > export_presets.cfg <<'EOF'
           [preset.0]
           name="Android"
           platform="Android"
@@ -150,22 +157,36 @@ jobs:
           permissions/custom_permissions=false
           permissions/internet=false
           permissions/vibrate=true
-          keystore/debug=$HOME/debug.keystore
-          keystore/debug_user=androiddebugkey
-          keystore/debug_password=android
+          keystore/debug="$HOME/.android/debug.keystore"
+          keystore/debug_user="androiddebugkey"
+          keystore/debug_password="android"
           EOF
 
-      - name: Export APK
+      - name: Import project and validate scripts
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
-          mkdir -p build
-          "$GODOT_BIN" --headless --path . --export-debug "Android" build/LeonRush.apk
-          ls -lh build/ || true
-          test -f build/LeonRush.apk
+          set -euo pipefail
+          "$GODOT_BIN" --headless --editor --path . --import
+          "$GODOT_BIN" --headless --editor --path . --quit
 
-      - name: Upload APK
+      - name: Export Android APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+
+          "$GODOT_BIN" --headless --path . --export-debug 'Android' build/LeonRush.apk
+
+          test -s build/LeonRush.apk
+          file build/LeonRush.apk
+          ls -lh build/LeonRush.apk
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: leon-rush-apk
+          name: leon-rush-android-apk
           path: ${{ steps.project.outputs.dir }}/build/LeonRush.apk
+          if-no-files-found: error
           retention-days: 14
