@@ -30,17 +30,10 @@ jobs:
           unzip -q /tmp/cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
           mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
 
-          # Licenças sem prompt
           mkdir -p "$ANDROID_HOME/licenses"
-          printf '%s\n' \
-            "24333f8a63b6825ea9c5514fde33152b18a0b7ea" \
-            > "$ANDROID_HOME/licenses/android-sdk-license"
-          printf '%s\n' \
-            "84831b9409646a918e30573bab4c9c91346d8abd" \
-            > "$ANDROID_HOME/licenses/android-sdk-preview-license"
-          printf '%s\n' \
-            "d56f5187479451eabf01fb78af6dfcb131a6481e" \
-            >> "$ANDROID_HOME/licenses/android-sdk-license"
+          printf '%s\n' "24333f8a63b6825ea9c5514fde33152b18a0b7ea" > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf '%s\n' "84831b9409646a918e30573bab4c9c91346d8abd" > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          printf '%s\n' "d56f5187479451eabf01fb78af6dfcb131a6481e" >> "$ANDROID_HOME/licenses/android-sdk-license"
 
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
           yes 2>/dev/null | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
@@ -54,18 +47,31 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
 
+      - name: Unzip project
+        run: |
+          if [ -f "LEON-RUSH.zip" ]; then
+            echo "Extracting LEON-RUSH.zip..."
+            unzip -o LEON-RUSH.zip -d .
+          elif [ -f "leon-rush.zip" ]; then
+            unzip -o leon-rush.zip -d .
+          fi
+          echo "Files after unzip:"
+          find . -name "project.godot" | head -20
+          ls -la
+
       - name: Find project root
         id: project
         run: |
-          if [ -f "project.godot" ]; then
-            echo "dir=." >> $GITHUB_OUTPUT
-          elif [ -f "LEON-RUSH/project.godot" ]; then
-            echo "dir=LEON-RUSH" >> $GITHUB_OUTPUT
-          else
-            echo "project.godot not found"
-            find . -name "project.godot" || true
+          FOUND=$(find . -name "project.godot" | head -n 1)
+          if [ -z "$FOUND" ]; then
+            echo "project.godot not found after unzip"
+            find . -maxdepth 3 -type d
+            ls -la
             exit 1
           fi
+          DIR=$(dirname "$FOUND")
+          echo "Found project at: $DIR"
+          echo "dir=$DIR" >> $GITHUB_OUTPUT
 
       - name: Download Godot 4.3
         run: |
