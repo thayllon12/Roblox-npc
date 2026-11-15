@@ -8,6 +8,8 @@ on:
 env:
   GODOT_VERSION: "4.3"
   GODOT_RELEASE: "4.3-stable"
+  ZIP_FILE: "LEON-RUSH.zip"
+  PROJECT_DIR: "project"
 
 jobs:
   build:
@@ -22,13 +24,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verificar estrutura do projeto
+      - name: Extrair o projeto do zip
         run: |
-          if [ ! -f project.godot ]; then
-            echo "ERRO: project.godot não está na raiz. Extraia o zip na raiz do repositório."
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERRO: $ZIP_FILE não encontrado na raiz do repositório."
             exit 1
           fi
-          ls -la
+          rm -rf "$PROJECT_DIR"
+          mkdir -p "$PROJECT_DIR"
+          unzip -q "$ZIP_FILE" -d "$PROJECT_DIR"
+
+          # O zip pode conter uma pasta LEON-RUSH/ no topo ou os arquivos direto.
+          # Se houver uma pasta única, promove o conteúdo dela para a raiz do projeto.
+          if [ ! -f "$PROJECT_DIR/project.godot" ] && [ -f "$PROJECT_DIR/LEON-RUSH/project.godot" ]; then
+            mv "$PROJECT_DIR/LEON-RUSH"/* "$PROJECT_DIR/" 2>/dev/null || true
+            mv "$PROJECT_DIR/LEON-RUSH"/.[!.]* "$PROJECT_DIR/" 2>/dev/null || true
+            rmdir "$PROJECT_DIR/LEON-RUSH"
+          fi
+
+          if [ ! -f "$PROJECT_DIR/project.godot" ]; then
+            echo "ERRO: project.godot não encontrado após extrair o zip."
+            find "$PROJECT_DIR" -maxdepth 3 | head -n 50
+            exit 1
+          fi
+          echo "Projeto extraído em $PROJECT_DIR:"
+          ls -la "$PROJECT_DIR"
 
       - name: Java 17
         uses: actions/setup-java@v4
@@ -36,16 +56,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Build-tools do Android (SDK já instalado no runner)
+      - name: Build-tools do Android
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f | head -n 1)"
-          fi
+          SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f | head -n 1)"
+          echo "sdkmanager em: $SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" "platform-tools" "build-tools;34.0.0" "platforms;android-34"
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
 
       - name: Baixar Godot ${{ env.GODOT_RELEASE }}
         run: |
@@ -82,15 +98,18 @@ jobs:
           EOF
 
       - name: Importar recursos do projeto
+        working-directory: project
         run: godot --headless --path . --import
 
       - name: Testes headless (regras de rota e sistemas)
+        working-directory: project
         run: godot --headless --path . -s res://tests/run_tests.gd
 
       - name: Exportar APK Android
+        working-directory: project
         run: |
-          mkdir -p build
-          godot --headless --path . --export-debug "Android" build/leon-rush.apk
+          mkdir -p ../build
+          godot --headless --path . --export-debug "Android" ../build/leon-rush.apk
 
       - name: Verificar o APK gerado
         run: |
@@ -104,3 +123,9 @@ jobs:
           name: leon-rush-apk
           path: build/leon-rush.apk
           if-no-files-found: error
+
+      - name: Publicar também o projeto extraído (opcional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: leon-rush-projeto
+          path: project/
