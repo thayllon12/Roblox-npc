@@ -136,18 +136,6 @@ jobs:
           test -f app/src/main/cpp/llama.cpp/CMakeLists.txt
           test -f app/src/main/cpp/llama.cpp/ggml/CMakeLists.txt
 
-      - name: Download Gradle dependencies
-        working-directory: ${{ steps.project.outputs.dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          gradle \
-            --no-daemon \
-            --stacktrace \
-            --refresh-dependencies \
-            :app:dependencies
-
       - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
