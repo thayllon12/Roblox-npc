@@ -28,19 +28,21 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      # 1. Checkout
+
+      # 1. BAIXAR REPOSITÓRIO
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 2. Localizar Dev.zip
+      # 2. LOCALIZAR DEV.ZIP
       - name: Locate Dev.zip
         shell: bash
         run: |
           set -euo pipefail
 
           ZIP_FILE=$(find "$GITHUB_WORKSPACE" \
+            -maxdepth 4 \
             -type f \
             -iname "Dev.zip" \
             -not -path "*/.git/*" \
@@ -48,17 +50,28 @@ jobs:
 
           if [ -z "$ZIP_FILE" ]; then
             echo "::error::Dev.zip não encontrado."
+            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f
             exit 1
           fi
 
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-          echo "Encontrado: $ZIP_FILE"
 
-      # 3. Validar e extrair
+          echo "=== ZIP ENCONTRADO ==="
+          ls -lh "$ZIP_FILE"
+          file "$ZIP_FILE"
+
+      # 3. VALIDAR E EXTRAIR ZIP
       - name: Extract Android project
         shell: bash
         run: |
           set -euo pipefail
+
+          if [ ! -s "$ZIP_FILE" ]; then
+            echo "::error::Dev.zip está vazio."
+            exit 1
+          fi
+
+          echo "=== VALIDANDO ZIP ==="
 
           unzip -tq "$ZIP_FILE"
 
@@ -66,14 +79,15 @@ jobs:
 
           mkdir -p "$EXTRACT_DIR"
 
+          echo "=== EXTRAINDO PROJETO ==="
+
           unzip -q "$ZIP_FILE" -d "$EXTRACT_DIR"
 
           echo "EXTRACT_DIR=$EXTRACT_DIR" >> "$GITHUB_ENV"
 
-          echo "=== ARQUIVOS EXTRAÍDOS ==="
-          find "$EXTRACT_DIR" -maxdepth 4 -type f | head -150
+          find "$EXTRACT_DIR" -maxdepth 5 -type f | head -200
 
-      # 4. Encontrar projeto Android
+      # 4. DETECTAR RAIZ ANDROID
       - name: Detect Android project
         shell: bash
         run: |
@@ -94,37 +108,43 @@ jobs:
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "::error::Módulo app não encontrado."
+            echo "::error::Módulo Android app não encontrado."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "=== PROJETO ==="
+          echo "=== PROJETO DETECTADO ==="
           echo "$PROJECT_DIR"
 
-      # 5. Instalar Java 17
+          echo "=== ESTRUTURA ==="
+          ls -la "$PROJECT_DIR"
+
+      # 5. INSTALAR JAVA 17
+      # IMPORTANTE: sem cache automático nesta etapa,
+      # pois o projeto está dentro de Dev.zip.
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      # 6. Instalar Android SDK
+      # 6. INSTALAR ANDROID SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
-      # 7. Aceitar licenças Android
+      # 7. ACEITAR LICENÇAS
       - name: Accept Android licenses
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
+          set +o pipefail
           yes | sdkmanager --licenses
+          set -o pipefail
 
-      # 8. Instalar pacotes Android
-      - name: Install Android SDK NDK CMake
+      # 8. INSTALAR SDK, NDK E CMAKE
+      - name: Install Android packages
         shell: bash
         run: |
           set -euo pipefail
@@ -136,14 +156,19 @@ jobs:
             "ndk;26.1.10909125" \
             "cmake;3.22.1"
 
-      # 9. Configurar ambiente
+      # 9. CONFIGURAR AMBIENTE ANDROID
       - name: Configure Android environment
         shell: bash
         run: |
           set -euo pipefail
 
+          mkdir -p "$PROJECT_DIR"
+
           printf 'sdk.dir=%s\n' "$ANDROID_SDK_ROOT" \
             > "$PROJECT_DIR/local.properties"
+
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" \
+            >> "$GITHUB_ENV"
 
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" \
             >> "$GITHUB_ENV"
@@ -151,47 +176,58 @@ jobs:
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" \
             >> "$GITHUB_ENV"
 
-          echo "=== SDK INSTALADO ==="
+          echo "=== ANDROID SDK ==="
           sdkmanager --list_installed
 
-      # 10. Configurar Gradle
+          echo "=== NDK ==="
+          ls "$ANDROID_SDK_ROOT/ndk"
+
+      # 10. CONFIGURAR GRADLE
       - name: Setup Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      # 11. Verificar ferramentas
+      # 11. VERIFICAR FERRAMENTAS
       - name: Verify build environment
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "=== JAVA ==="
           java -version
+
+          echo "=== GRADLE ==="
           gradle --version
-          cmake --version
-          git --version
+
+          echo "=== CMAKE ==="
+          "$ANDROID_SDK_ROOT/cmake/3.22.1/bin/cmake" --version
 
           echo "=== NDK ==="
           test -d "$ANDROID_NDK_ROOT"
 
-          echo "=== CMAKE ==="
-          CMAKE_FILE="$PROJECT_DIR/app/src/main/cpp/CMakeLists.txt"
+          echo "=== PROJETO ==="
+          test -f "$PROJECT_DIR/settings.gradle" || \
+          test -f "$PROJECT_DIR/settings.gradle.kts"
 
-          if [ ! -f "$CMAKE_FILE" ]; then
-            echo "::error::CMakeLists.txt não encontrado."
-            exit 1
+          test -f "$PROJECT_DIR/app/build.gradle" || \
+          test -f "$PROJECT_DIR/app/build.gradle.kts"
+
+          echo "=== CMAKE DO APLICATIVO ==="
+
+          if [ -f "$PROJECT_DIR/app/src/main/cpp/CMakeLists.txt" ]; then
+            echo "CMakeLists.txt encontrado."
+          else
+            echo "::warning::CMakeLists.txt não encontrado."
           fi
-
-          echo "CMakeLists.txt encontrado."
 
           if [ -f "$PROJECT_DIR/app/src/main/cpp/llama.cpp/CMakeLists.txt" ]; then
             echo "llama.cpp encontrado."
           else
-            echo "::warning::llama.cpp não está presente no diretório esperado."
-            echo "Verifique a configuração do backend nativo."
+            echo "::warning::llama.cpp não encontrado no caminho esperado."
           fi
 
-      # 12. Compilar
+      # 12. BAIXAR DEPENDÊNCIAS E COMPILAR
       - name: Build Android APK
         shell: bash
         run: |
@@ -199,9 +235,31 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "=== INICIANDO COMPILAÇÃO ==="
+          echo "=== PREPARANDO DEPENDÊNCIAS ==="
 
-          gradle \
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            GRADLE_CMD="./gradlew"
+          else
+            GRADLE_CMD="gradle"
+          fi
+
+          echo "=== VERSÃO DO GRADLE ==="
+          $GRADLE_CMD --version
+
+          echo "=== RESOLVENDO DEPENDÊNCIAS ==="
+
+          $GRADLE_CMD \
+            --no-daemon \
+            --stacktrace \
+            --console=plain \
+            dependencies \
+            --configuration debugRuntimeClasspath \
+            2>&1 | tee "$RUNNER_TEMP/dependencies.log"
+
+          echo "=== COMPILANDO APK DEBUG ==="
+
+          $GRADLE_CMD \
             --no-daemon \
             --stacktrace \
             --info \
@@ -209,9 +267,9 @@ jobs:
             assembleDebug \
             2>&1 | tee "$RUNNER_TEMP/build.log"
 
-          echo "=== COMPILAÇÃO CONCLUÍDA ==="
+          echo "=== BUILD FINALIZADO ==="
 
-      # 13. Verificar APK
+      # 13. VERIFICAR APK
       - name: Verify APK
         if: success()
         shell: bash
@@ -225,20 +283,26 @@ jobs:
             exit 1
           fi
 
-          APK=$(find "$APK_DIR" -maxdepth 1 \
-            -type f -name "*.apk" -print -quit)
+          APK=$(find "$APK_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name "*.apk" \
+            -print -quit)
 
           if [ -z "$APK" ]; then
             echo "::error::Nenhum APK foi gerado."
             exit 1
           fi
 
-          echo "APK GERADO:"
+          echo "=== APK GERADO ==="
           ls -lh "$APK"
 
+          echo "=== SHA256 ==="
           sha256sum "$APK"
 
-      # 14. Logs
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+
+      # 14. SALVAR LOGS
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -246,10 +310,11 @@ jobs:
           name: DEV-AI-ASSISTANT-BUILD-LOG
           path: |
             ${{ runner.temp }}/build.log
+            ${{ runner.temp }}/dependencies.log
           if-no-files-found: ignore
           retention-days: 14
 
-      # 15. Publicar APK
+      # 15. PUBLICAR APK
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
@@ -259,3 +324,19 @@ jobs:
             ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+
+      # 16. RESUMO DA COMPILAÇÃO
+      - name: Build summary
+        if: always()
+        shell: bash
+        run: |
+          echo "## DEV AI ASSISTANT" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "APK Debug compilado com sucesso." \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "A compilação falhou. Consulte os logs." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
