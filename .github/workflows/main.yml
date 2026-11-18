@@ -1,14 +1,19 @@
+
 name: Build APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -23,61 +28,57 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-      - name: Accept licenses
+      - name: Install Android SDK packages
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-
-      - name: Install required SDK packages
-        run: |
-          sdkmanager \
+          sdkmanager --install \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "ndk;26.1.10909125" \
             "cmake;3.22.1" \
             "platform-tools"
 
-      - name: Create local.properties
+      - name: Accept Android licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Configure Android environment
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
 
-      - name: Setup Gradle Wrapper
-        run: |
-          if [ ! -f ./gradlew ]; then
-            gradle wrapper --gradle-version 8.9 || true
-          fi
-          chmod +x ./gradlew || true
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
+          gradle-version: '8.9'
 
       - name: Build Debug APK
         run: |
-          if [ -f ./gradlew ]; then
-            ./gradlew assembleDebug --stacktrace
-          else
-            echo "gradlew não encontrado. Tentando com gradle do sistema..."
-            gradle assembleDebug --stacktrace || true
-          fi
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
+          set -e
 
-      - name: List APK files
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon assembleDebug --stacktrace
+          elif [ -f "./build.gradle" ] || [ -f "./build.gradle.kts" ]; then
+            gradle --no-daemon assembleDebug --stacktrace
+          else
+            echo "ERRO: Projeto Gradle não encontrado na raiz."
+            echo "Verifique a localização de settings.gradle ou settings.gradle.kts."
+            exit 1
+          fi
+
+      - name: Find APK
         if: always()
         run: |
-          echo "=== Procurando APKs ==="
-          find . -name "*.apk" -type f 2>/dev/null || echo "Nenhum APK encontrado"
+          echo "=== APKs encontrados ==="
+          find . -type f -name "*.apk" -print || true
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -85,7 +86,6 @@ jobs:
         with:
           name: DEV-AI-ASSISTANT-debug
           path: |
-            app/build/outputs/apk/debug/*.apk
-            **/build/outputs/apk/**/*.apk
+            **/build/outputs/apk/debug/*.apk
           if-no-files-found: warn
           retention-days: 14
