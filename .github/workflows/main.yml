@@ -120,12 +120,15 @@ jobs:
           cache-disabled: false
 
       - name: Restaurar keystore debug fixa
-        if: ${{ secrets.DEBUG_KEYSTORE_B64 != '' }}
         shell: bash
         env:
           DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
           set -euo pipefail
+          if [[ -z "${DEBUG_KEYSTORE_B64:-}" ]]; then
+            echo "Secret DEBUG_KEYSTORE_B64 não definido; usando keystore padrão do runner."
+            exit 0
+          fi
           mkdir -p "$HOME/.android"
           printf '%s' "$DEBUG_KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
           chmod 600 "$HOME/.android/debug.keystore"
