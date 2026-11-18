@@ -119,6 +119,18 @@ jobs:
           gradle-version: '8.9'
           cache-disabled: false
 
+      - name: Restaurar keystore debug fixa
+        if: ${{ secrets.DEBUG_KEYSTORE_B64 != '' }}
+        shell: bash
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.android"
+          printf '%s' "$DEBUG_KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+          echo "Keystore debug fixa restaurada."
+
       - name: Prepare llama.cpp
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
@@ -148,6 +160,17 @@ jobs:
             --warning-mode all \
             --console=plain \
             clean assembleDebug
+
+      - name: Mostrar SHA-1 da chave debug
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          keytool -list -v \
+            -keystore "$HOME/.android/debug.keystore" \
+            -alias androiddebugkey \
+            -storepass android -keypass android \
+            | grep SHA1 || echo "Keystore não encontrada."
 
       - name: Verify APK
         if: success()
