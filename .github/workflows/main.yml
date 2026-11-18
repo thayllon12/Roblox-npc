@@ -50,24 +50,23 @@ jobs:
 
           if [ -z "$ZIP_FILE" ]; then
             echo "::error::Dev.zip não encontrado."
-            find "$GITHUB_WORKSPACE" -maxdepth 5 -type f
             exit 1
           fi
 
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
-          echo "=== ARQUIVO ENCONTRADO ==="
+          echo "=== ZIP ENCONTRADO ==="
           ls -lh "$ZIP_FILE"
           file "$ZIP_FILE"
 
-      # 3. VALIDAR E EXTRAIR PROJETO
+      # 3. VALIDAR E EXTRAIR ZIP
       - name: Extract Dev.zip
         shell: bash
         run: |
           set -euo pipefail
 
           if ! unzip -tq "$ZIP_FILE"; then
-            echo "::error::Dev.zip não é um arquivo ZIP válido."
+            echo "::error::Dev.zip inválido ou corrompido."
             exit 1
           fi
 
@@ -95,7 +94,7 @@ jobs:
             -print -quit)
 
           if [ -z "$SETTINGS" ]; then
-            echo "::error::Nenhum settings.gradle encontrado."
+            echo "::error::settings.gradle não encontrado."
             exit 1
           fi
 
@@ -109,11 +108,8 @@ jobs:
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "=== RAIZ ANDROID ==="
+          echo "=== PROJETO ANDROID ==="
           echo "$PROJECT_DIR"
-
-          echo "=== SETTINGS ==="
-          cat "$SETTINGS"
 
       # 5. INSTALAR JAVA 17
       - name: Setup JDK 17
@@ -122,7 +118,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # 6. CONFIGURAR ANDROID SDK
+      # 6. INSTALAR ANDROID SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
@@ -131,11 +127,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           yes | sdkmanager --licenses || true
 
-      # 8. INSTALAR PACOTES ANDROID
-      - name: Install Android SDK packages
+      # 8. INSTALAR SDK, NDK E CMAKE
+      - name: Install Android packages
         shell: bash
         run: |
           set -euo pipefail
@@ -147,7 +142,7 @@ jobs:
             "ndk;26.1.10909125" \
             "cmake;3.22.1"
 
-      # 9. CONFIGURAR AMBIENTE
+      # 9. CONFIGURAR ANDROID
       - name: Configure Android environment
         shell: bash
         run: |
@@ -165,17 +160,63 @@ jobs:
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125" \
             >> "$GITHUB_ENV"
 
-          echo "=== SDK INSTALADO ==="
-          sdkmanager --list_installed
-
       # 10. CONFIGURAR GRADLE
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      # 11. VERIFICAR FERRAMENTAS
-      - name: Verify build environment
+      # 11. PREPARAR LLAMA.CPP
+      - name: Prepare llama.cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          LLAMA_DIR="$PROJECT_DIR/app/src/main/cpp/llama.cpp"
+          PREPARE_SCRIPT="$PROJECT_DIR/scripts/prepare-llama.sh"
+
+          echo "=== PREPARANDO LLAMA.CPP ==="
+
+          # Preferir o script do próprio projeto.
+          if [ -f "$PREPARE_SCRIPT" ]; then
+
+            echo "Executando scripts/prepare-llama.sh"
+
+            bash "$PREPARE_SCRIPT"
+
+          fi
+
+          # Verificar se o script preparou a biblioteca.
+          if [ ! -f "$LLAMA_DIR/CMakeLists.txt" ]; then
+
+            echo "Biblioteca não encontrada."
+            echo "Baixando llama.cpp oficial..."
+
+            mkdir -p "$(dirname "$LLAMA_DIR")"
+
+            rm -rf "$LLAMA_DIR"
+
+            git clone \
+              --depth 1 \
+              --recurse-submodules \
+              https://github.com/ggml-org/llama.cpp.git \
+              "$LLAMA_DIR"
+
+          fi
+
+          # Validar biblioteca.
+          if [ ! -f "$LLAMA_DIR/CMakeLists.txt" ]; then
+            echo "::error::llama.cpp não foi instalado corretamente."
+            exit 1
+          fi
+
+          echo "=== LLAMA.CPP PRONTO ==="
+          ls -la "$LLAMA_DIR"
+
+      # 12. VERIFICAR AMBIENTE NATIVO
+      - name: Verify native environment
         shell: bash
         run: |
           set -euo pipefail
@@ -186,32 +227,25 @@ jobs:
           echo "=== GRADLE ==="
           gradle --version
 
-          echo "=== ANDROID SDK ==="
-          test -d "$ANDROID_SDK_ROOT/platforms/android-35"
-
           echo "=== NDK ==="
           test -d "$ANDROID_NDK_ROOT"
 
           echo "=== CMAKE ==="
           "$ANDROID_SDK_ROOT/cmake/3.22.1/bin/cmake" --version
 
-          echo "=== CONFIGURAÇÃO NATIVA ==="
+          echo "=== LLAMA.CPP ==="
+          test -f "$PROJECT_DIR/app/src/main/cpp/llama.cpp/CMakeLists.txt"
+
+          echo "=== CMAKE DO APLICATIVO ==="
 
           if [ -f "$PROJECT_DIR/app/src/main/cpp/CMakeLists.txt" ]; then
             echo "CMakeLists.txt encontrado."
-
           else
-            echo "::warning::CMakeLists.txt não encontrado."
+            echo "::error::CMakeLists.txt principal ausente."
+            exit 1
           fi
 
-          if [ -f "$PROJECT_DIR/app/src/main/cpp/llama.cpp/CMakeLists.txt" ]; then
-            echo "llama.cpp encontrado."
-
-          else
-            echo "::warning::llama.cpp não encontrado."
-          fi
-
-      # 12. COMPILAR APK E IDENTIFICAR ERROS
+      # 13. COMPILAR APK
       - name: Build Android APK
         shell: bash
         run: |
@@ -219,19 +253,14 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          echo "=== SELECIONANDO GRADLE ==="
-
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
             GRADLE="./gradlew"
-            echo "Usando Gradle Wrapper."
-
           else
             GRADLE="gradle"
-            echo "Usando Gradle instalado."
           fi
 
-          echo "=== COMPILANDO ==="
+          echo "=== COMPILANDO DEV AI ASSISTANT ==="
 
           set +e
 
@@ -250,54 +279,42 @@ jobs:
 
           if [ "$BUILD_STATUS" -ne 0 ]; then
 
-            echo ""
             echo "================================"
             echo "       BUILD FALHOU"
             echo "================================"
 
-            echo "=== CAUSA PROVÁVEL ==="
-
             grep -n -i -A 10 -B 5 \
-              -E "What went wrong|Caused by:|Could not resolve|Could not find|Compilation error|Execution failed|error:" \
+              -E "What went wrong|Caused by:|CMake Error|Could not resolve|Could not find|Compilation error|Execution failed|error:" \
               "$RUNNER_TEMP/build.log" || true
 
             exit "$BUILD_STATUS"
           fi
 
-          echo "=== BUILD CONCLUÍDO ==="
+          echo "BUILD CONCLUÍDO!"
 
-      # 13. VERIFICAR APK
+      # 14. LOCALIZAR E VALIDAR APK
       - name: Verify APK
         if: success()
         shell: bash
         run: |
           set -euo pipefail
 
-          APK_DIR="$PROJECT_DIR/app/build/outputs/apk/debug"
-
-          if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Pasta de APK não encontrada."
-            exit 1
-          fi
-
-          APK=$(find "$APK_DIR" \
-            -maxdepth 1 \
+          APK=$(find "$PROJECT_DIR/app/build/outputs/apk" \
             -type f \
             -name "*.apk" \
             -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "::error::Nenhum APK gerado."
+            echo "::error::APK não foi gerado."
             exit 1
           fi
 
           echo "=== APK GERADO ==="
           ls -lh "$APK"
 
-          echo "=== SHA256 ==="
           sha256sum "$APK"
 
-      # 14. PUBLICAR LOGS
+      # 15. ENVIAR LOGS
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -308,18 +325,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      # 15. PUBLICAR APK
+      # 16. PUBLICAR APK
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: DEV-AI-ASSISTANT-APK
           path: |
-            ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+            ${{ env.PROJECT_DIR }}/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 14
 
-      # 16. RESUMO FINAL
+      # 17. RESUMO
       - name: Build summary
         if: always()
         shell: bash
@@ -331,6 +348,6 @@ jobs:
             echo "APK compilado com sucesso!" \
               >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Falha na compilação. Consulte os logs." \
+            echo "Falha na compilação." \
               >> "$GITHUB_STEP_SUMMARY"
           fi
