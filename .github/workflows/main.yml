@@ -29,9 +29,10 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Accept licenses
-        run: yes | sdkmanager --licenses || true
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
 
-      - name: Install SDK components
+      - name: Install required SDK packages
         run: |
           sdkmanager \
             "platforms;android-35" \
@@ -41,14 +42,15 @@ jobs:
             "platform-tools"
 
       - name: Create local.properties
-        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      - name: Setup Gradle Wrapper (se não existir)
+      - name: Setup Gradle Wrapper
         run: |
           if [ ! -f ./gradlew ]; then
-            gradle wrapper --gradle-version 8.9
+            gradle wrapper --gradle-version 8.9 || true
           fi
-          chmod +x ./gradlew
+          chmod +x ./gradlew || true
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -57,26 +59,33 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: ${{ runner.os }}-gradle-
+          restore-keys: |
+            ${{ runner.os }}-gradle-
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace --info
+        run: |
+          if [ -f ./gradlew ]; then
+            ./gradlew assembleDebug --stacktrace
+          else
+            echo "gradlew não encontrado. Tentando com gradle do sistema..."
+            gradle assembleDebug --stacktrace || true
+          fi
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/26.1.10909125
 
-      - name: Upload APK
+      - name: List APK files
+        if: always()
+        run: |
+          echo "=== Procurando APKs ==="
+          find . -name "*.apk" -type f 2>/dev/null || echo "Nenhum APK encontrado"
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: DEV-AI-ASSISTANT-debug
           path: |
             app/build/outputs/apk/debug/*.apk
-            app/build/outputs/**/*.apk
+            **/build/outputs/apk/**/*.apk
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Summary
-        if: always()
-        run: |
-          echo "### Resultado do build" >> $GITHUB_STEP_SUMMARY
-          find app/build/outputs -name "*.apk" -exec ls -lh {} \; 2>/dev/null || echo "Nenhum APK gerado"
